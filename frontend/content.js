@@ -1,98 +1,96 @@
 // --- INJECTION GUARD ---
 if (!document.getElementById('my-chatbot-sidebar')) {
-  
-  // 1. Build the Sidebar UI
-  const sidebar = document.createElement('div');
+  const sidebar = document.createElement('aside');
   sidebar.id = 'my-chatbot-sidebar';
-  sidebar.style.cssText = `
-    position: fixed;
-    top: 0;
-    right: -350px;
-    width: 320px;
-    height: 100vh;
-    background: #ffffff;
-    box-shadow: -4px 0 15px rgba(0,0,0,0.1);
-    z-index: 2147483647; 
-    transition: right 0.3s ease;
-    padding: 20px;
-    box-sizing: border-box;
-    font-family: system-ui, -apple-system, sans-serif;
-    display: flex;
-    flex-direction: column;
-  `;
-
+  sidebar.setAttribute('aria-label', 'Privacy assistant');
   sidebar.innerHTML = `
-    <h2 style="margin-top: 0; font-size: 18px; color: #333;">Support Chat</h2>
-    <textarea id="chat-input" rows="5" style="width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 6px; resize: none; box-sizing: border-box;" placeholder="How can I help you?"></textarea>
-    <button id="chat-submit" style="width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">Submit & Capture</button>
-    <p id="chat-status" style="font-size: 13px; color: #28a745; margin-top: 15px; display: none; text-align: center;">Saved, Captured & Sent!</p>
+    <div class="privacy-shell">
+      <header class="privacy-header">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="brand-copy">
+          <p class="eyebrow">Privacy assistant</p>
+          <h2>ScreenSafe</h2>
+        </div>
+        <div class="connection-status" title="Ready to capture"><span></span><span class="sr-only">Ready</span></div>
+      </header>
+
+      <main class="privacy-body">
+        <div class="welcome-block">
+          <p class="kicker">Capture context</p>
+          <h3>What can we help you with?</h3>
+          <p class="description">Describe the issue and we&apos;ll securely capture the current screen for context.</p>
+        </div>
+        <div class="privacy-note"><span class="shield-icon" aria-hidden="true">✓</span><span>Your screenshot is saved locally before it is sent.</span></div>
+        <label class="input-label" for="chat-input">Your request</label>
+        <textarea id="chat-input" rows="6" placeholder="Please enter the user prompt..." aria-describedby="input-hint"></textarea>
+        <p id="input-hint" class="input-hint"> </p>
+        <div id="chat-status" class="chat-status" role="status" aria-live="polite" aria-atomic="true"></div>
+      </main>
+
+      <footer class="privacy-footer">
+        <button id="chat-submit" type="button"><span class="button-icon" aria-hidden="true">↗</span><span>Submit &amp; capture</span></button>
+        <p class="footer-copy"><span class="lock-icon" aria-hidden="true">⌑</span> Private by design</p>
+      </footer>
+    </div>
   `;
 
   document.body.appendChild(sidebar);
 
-  // 2. Handle toggling the sidebar visibility
-  let isVisible = false;
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "toggle_sidebar") {
+  let isVisible = true;
+  sidebar.classList.add('active');
+  const inputEl = sidebar.querySelector('#chat-input');
+  const submitEl = sidebar.querySelector('#chat-submit');
+  const statusEl = sidebar.querySelector('#chat-status');
+
+  chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === 'toggle_sidebar') {
       isVisible = !isVisible;
-      sidebar.style.right = isVisible ? "0px" : "-350px";
+      sidebar.classList.toggle('active', isVisible);
+      if (isVisible) window.setTimeout(() => inputEl.focus(), 250);
     }
   });
 
-  // 3. Handle Submit logic
-  document.getElementById('chat-submit').addEventListener('click', () => {
-    const inputEl = document.getElementById('chat-input');
-    const statusEl = document.getElementById('chat-status');
+  submitEl.addEventListener('click', () => {
     const userInput = inputEl.value;
+    if (!userInput.trim() || submitEl.disabled) return;
 
-    if (!userInput.trim()) return;
-
-    // Show a loading state
-    statusEl.textContent = "Capturing screen...";
-    statusEl.style.display = 'block';
-    statusEl.style.color = '#007bff'; 
-
-    // Step A: Hide the sidebar entirely 
+    statusEl.textContent = 'Capturing screen…';
+    statusEl.className = 'chat-status is-loading';
+    submitEl.disabled = true;
+    sidebar.classList.add('is-busy');
     sidebar.style.display = 'none';
 
-    // Step B: Ask background.js to take a screenshot
-    chrome.runtime.sendMessage({ action: "take_screenshot" }, (response) => {
-      
-      // Step C: Show the sidebar again once the screenshot is complete
-      sidebar.style.display = 'flex';
+    chrome.runtime.sendMessage({ action: 'take_screenshot' }, (response) => {
+      sidebar.style.display = 'block';
 
       if (response && response.imgSrc) {
-        statusEl.textContent = "Saving locally & Sending...";
+        statusEl.textContent = 'Saving locally & sending…';
+        const payload = { prompt: userInput, image: response.imgSrc, timestamp: new Date().toISOString() };
 
-        const payload = {
-          prompt: userInput,
-          image: response.imgSrc,
-          timestamp: new Date().toISOString()
-        };
-
-        // Step D: Save a copy to Chrome's local storage BEFORE sending
-        chrome.storage.local.set({ 
-          lastPrompt: payload.prompt, 
+        chrome.storage.local.set({
+          lastPrompt: payload.prompt,
           lastScreenshot: payload.image,
           lastTimestamp: payload.timestamp
         }, () => {
-          
-          // Step E: Send the payload to background.js to make the POST request
-          chrome.runtime.sendMessage({ action: "send_to_backend", payload: payload }, (backendResponse) => {
+          chrome.runtime.sendMessage({ action: 'send_to_backend', payload }, (backendResponse) => {
+            submitEl.disabled = false;
+            sidebar.classList.remove('is-busy');
             if (backendResponse && backendResponse.success) {
-              statusEl.textContent = "Saved locally & Sent to backend!";
-              statusEl.style.color = '#28a745'; 
-              inputEl.value = ''; 
+              statusEl.textContent = 'Saved locally & sent to backend.';
+              statusEl.className = 'chat-status is-success';
+              inputEl.value = '';
             } else {
-              statusEl.textContent = "Saved locally, but backend failed.";
-              statusEl.style.color = '#dc3545'; 
+              statusEl.textContent = 'Saved locally, but backend failed.';
+              statusEl.className = 'chat-status is-error';
             }
-
-            setTimeout(() => {
-              statusEl.style.display = 'none';
-            }, 3000);
+            window.setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'chat-status'; }, 3500);
           });
         });
+      } else {
+        submitEl.disabled = false;
+        sidebar.classList.remove('is-busy');
+        statusEl.textContent = 'Unable to capture the current screen.';
+        statusEl.className = 'chat-status is-error';
       }
     });
   });
