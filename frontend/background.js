@@ -1,6 +1,3 @@
-// Resizes a data URL image to targetSize x targetSize WITHOUT cropping.
-// The image is scaled down to fit inside the square (preserving aspect ratio)
-// and centered on a background (letterboxed), so nothing is cut off.
 async function resizeImageDataUrl(dataUrl, targetSize = 640, backgroundColor = null) {
   const blob = dataUrlToBlob(dataUrl);
   const bitmap = await createImageBitmap(blob);
@@ -30,8 +27,6 @@ async function resizeImageDataUrl(dataUrl, targetSize = 640, backgroundColor = n
   return `data:image/png;base64,${arrayBufferToBase64(arrayBuffer)}`;
 }
 
-// Decodes a "data:<mime>;base64,<data>" string into a Blob without using fetch(),
-// since fetch() on data: URLs is unreliable inside MV3 service workers.
 function dataUrlToBlob(dataUrl) {
   const commaIndex = dataUrl.indexOf(",");
   const header = dataUrl.slice(0, commaIndex);
@@ -58,40 +53,53 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
-chrome.action.onClicked.addListener(async (tab) => {
-  if (tab.url.startsWith("chrome://") || tab.url.startsWith("https://chrome.google.com/webstore")) return;
-
-  try {
-    await chrome.tabs.sendMessage(tab.id, { action: "toggle_sidebar" });
-  } catch (error) {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-    chrome.tabs.sendMessage(tab.id, { action: "toggle_sidebar" });
-  }
-});
-
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  // 1. Handle Screenshot
+
+  // ============================
+  // TAKE SCREENSHOT
+  // ============================
   if (request.action === "take_screenshot") {
+
     setTimeout(() => {
-      chrome.tabs.captureVisibleTab(null, { format: "png" }, async (dataUrl) => {
-        try {
-          console.log("[screenshot] original size (base64 chars):", dataUrl.length);
-          const resizedDataUrl = await resizeImageDataUrl(dataUrl);
-          console.log("[screenshot] resized size (base64 chars):", resizedDataUrl.length);
-          sendResponse({ imgSrc: resizedDataUrl });
-        } catch (error) {
-          console.error("[screenshot] Error resizing screenshot, falling back to original:", error);
-          sendResponse({ imgSrc: dataUrl });
+
+      chrome.tabs.captureVisibleTab(
+        null,
+        { format: "png" },
+        async (dataUrl) => {
+
+          if (!dataUrl) {
+            sendResponse({
+              success: false,
+              error: "Screenshot capture returned no data"
+            });
+            return;
+          }
+
+          try {
+            const resizedDataUrl = await resizeImageDataUrl(dataUrl);
+            sendResponse({success: true, imgSrc: resizedDataUrl});
+
+          } catch {
+            sendResponse({
+              success: true,
+              imgSrc: dataUrl
+            });
+          }
+
         }
-      });
+      );
+
     }, 150);
+
     return true;
   }
 
-  // 2. Handle Backend POST Request
-  // 2. Handle Backend POST Request
+
+  // ============================
+  // SEND TO BACKEND
+  // ============================
   if (request.action === "send_to_backend") {
-    // Point this to your locally running Express server
+
     const backendUrl = "http://localhost:3000/api/data";
 
     fetch(backendUrl, {
@@ -99,19 +107,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       headers: {
         "Content-Type": "application/json"
       },
-      // The payload contains the text input and the base64 image data
       body: JSON.stringify(request.payload)
     })
-      // ... rest of your fetch logic
-      .then(response => {
-        console.log("Successfully sent to backend");
-        sendResponse({ success: true });
+      .then(function (response) {
+
+        if (!response.ok) {
+          throw new Error(
+            "Backend returned HTTP " + response.status
+          );
+        }
+
+        sendResponse({
+          success: true
+        });
+
       })
-      .catch(error => {
-        console.error("Error sending to backend:", error);
-        sendResponse({ success: false, error: error.toString() });
+      .catch(function (error) {
+
+        console.error("Backend error:", error);
+
+        sendResponse({
+          success: false,
+          error: String(error)
+        });
+
       });
 
-    return true; // Keeps the message channel open for the async fetch response
+    return true;
   }
+
+
+  // ============================
+  // UNKNOWN ACTION
+  // ============================
+  sendResponse({
+    success: false,
+    error: "Unknown action: " + request.action
+  });
+
+  return false;
 });
