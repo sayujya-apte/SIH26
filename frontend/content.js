@@ -1,9 +1,9 @@
 // --- INJECTION GUARD ---
 if (!document.getElementById('my-chatbot-sidebar')) {
-  const sidebar = document.createElement('aside');
-  sidebar.id = 'my-chatbot-sidebar';
-  sidebar.setAttribute('aria-label', 'Privacy assistant');
-  sidebar.innerHTML = `
+    const sidebar = document.createElement('aside');
+    sidebar.id = 'my-chatbot-sidebar';
+    sidebar.setAttribute('aria-label', 'Privacy assistant');
+    sidebar.innerHTML = `
     <div class="privacy-shell">
       <header class="privacy-header">
         <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -20,7 +20,7 @@ if (!document.getElementById('my-chatbot-sidebar')) {
           <h3>What can we help you with?</h3>
           <p class="description">Describe the issue and we&apos;ll securely capture the current screen for context.</p>
         </div>
-        <div class="privacy-note"><span class="shield-icon" aria-hidden="true">✓</span><span>Your screenshot is saved locally before it is sent.</span></div>
+        <div class="privacy-note"><span class="shield-icon" aria-hidden="true">✓</span><span>Personal info is detected and redacted on your device — nothing leaves your computer.</span></div>
         <label class="input-label" for="chat-input">Your request</label>
         <textarea id="chat-input" rows="6" placeholder="Please enter the user prompt..." aria-describedby="input-hint"></textarea>
         <p id="input-hint" class="input-hint"> </p>
@@ -34,64 +34,140 @@ if (!document.getElementById('my-chatbot-sidebar')) {
     </div>
   `;
 
-  document.body.appendChild(sidebar);
+    document.body.appendChild(sidebar);
 
-  let isVisible = true;
-  sidebar.classList.add('active');
-  const inputEl = sidebar.querySelector('#chat-input');
-  const submitEl = sidebar.querySelector('#chat-submit');
-  const statusEl = sidebar.querySelector('#chat-status');
+    let isVisible = true;
+    sidebar.classList.add('active');
+    const inputEl = sidebar.querySelector('#chat-input');
+    const submitEl = sidebar.querySelector('#chat-submit');
+    const statusEl = sidebar.querySelector('#chat-status');
 
-  chrome.runtime.onMessage.addListener((request) => {
-    if (request.action === 'toggle_sidebar') {
-      isVisible = !isVisible;
-      sidebar.classList.toggle('active', isVisible);
-      if (isVisible) window.setTimeout(() => inputEl.focus(), 250);
-    }
-  });
-
-  submitEl.addEventListener('click', () => {
-    const userInput = inputEl.value;
-    if (!userInput.trim() || submitEl.disabled) return;
-
-    statusEl.textContent = 'Capturing screen…';
-    statusEl.className = 'chat-status is-loading';
-    submitEl.disabled = true;
-    sidebar.classList.add('is-busy');
-    sidebar.style.display = 'none';
-
-    chrome.runtime.sendMessage({ action: 'take_screenshot' }, (response) => {
-      sidebar.style.display = 'block';
-
-      if (response && response.imgSrc) {
-        statusEl.textContent = 'Saving locally & sending…';
-        const payload = { prompt: userInput, image: response.imgSrc, timestamp: new Date().toISOString() };
-
-        chrome.storage.local.set({
-          lastPrompt: payload.prompt,
-          lastScreenshot: payload.image,
-          lastTimestamp: payload.timestamp
-        }, () => {
-          chrome.runtime.sendMessage({ action: 'send_to_backend', payload }, (backendResponse) => {
-            submitEl.disabled = false;
-            sidebar.classList.remove('is-busy');
-            if (backendResponse && backendResponse.success) {
-              statusEl.textContent = 'Saved locally & sent to backend.';
-              statusEl.className = 'chat-status is-success';
-              inputEl.value = '';
-            } else {
-              statusEl.textContent = 'Saved locally, but backend failed.';
-              statusEl.className = 'chat-status is-error';
+    // Wraps chrome.runtime.sendMessage so a stale/invalidated extension context
+    // (e.g. the extension was reloaded or updated while this page was already
+    // open) surfaces as a clear rejection instead of an uncaught synchronous
+    // throw that leaves the UI stuck on its last status message.
+    function safeSendMessage(message) {
+        return new Promise((resolve, reject) => {
+            if (!chrome.runtime?.id) {
+                reject(new Error('EXTENSION_CONTEXT_INVALIDATED'));
+                return;
             }
-            window.setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'chat-status'; }, 3500);
-          });
+            try {
+                chrome.runtime.sendMessage(message, (response) => {
+                    if (chrome.runtime.lastError) {
+                        const msg = chrome.runtime.lastError.message || '';
+                        reject(new Error(
+                            msg.includes('Extension context invalidated')
+                                ? 'EXTENSION_CONTEXT_INVALIDATED'
+                                : msg
+                        ));
+                        return;
+                    }
+                    resolve(response);
+                });
+            } catch (err) {
+                reject(
+                    String(err).includes('Extension context invalidated')
+                        ? new Error('EXTENSION_CONTEXT_INVALIDATED')
+                        : err
+                );
+            }
         });
-      } else {
+    }
+
+    function showContextInvalidatedError() {
         submitEl.disabled = false;
         sidebar.classList.remove('is-busy');
-        statusEl.textContent = 'Unable to capture the current screen.';
+        statusEl.textContent = 'This page needs a refresh after an extension update. Please reload the page and try again.';
         statusEl.className = 'chat-status is-error';
-      }
+    }
+
+    chrome.runtime.onMessage.addListener((request) => {
+        if (request.action === 'toggle_sidebar') {
+            isVisible = !isVisible;
+            sidebar.classList.toggle('active', isVisible);
+            if (isVisible) window.setTimeout(() => inputEl.focus(), 250);
+        }
     });
-  });
+
+    submitEl.addEventListener('click', async () => {
+        const userInput = inputEl.value;
+        if (!userInput.trim() || submitEl.disabled) return;
+
+        statusEl.textContent = 'Capturing screen…';
+        statusEl.className = 'chat-status is-loading';
+        submitEl.disabled = true;
+        sidebar.classList.add('is-busy');
+        sidebar.style.display = 'none';
+
+        let response;
+        try {
+            response = await safeSendMessage({ action: 'take_screenshot' });
+        } catch (err) {
+            sidebar.style.display = 'block';
+            if (String(err.message).includes('EXTENSION_CONTEXT_INVALIDATED')) {
+                showContextInvalidatedError();
+            } else {
+                submitEl.disabled = false;
+                sidebar.classList.remove('is-busy');
+                statusEl.textContent = 'Unable to capture the current screen.';
+                statusEl.className = 'chat-status is-error';
+            }
+            return;
+        }
+
+        sidebar.style.display = 'block';
+
+        if (response && response.imgSrc) {
+            statusEl.textContent = 'Scanning for personal info…';
+
+            let detectResponse;
+            try {
+                // This one call does the whole rest of the pipeline inside background.js:
+                // runs the ONNX model on the screenshot, draws black boxes over any
+                // detected PII, and saves the redacted PNG to the Downloads folder.
+                detectResponse = await safeSendMessage({ action: 'detect_pii', imgSrc: response.imgSrc });
+            } catch (err) {
+                submitEl.disabled = false;
+                sidebar.classList.remove('is-busy');
+                if (String(err.message).includes('EXTENSION_CONTEXT_INVALIDATED')) {
+                    showContextInvalidatedError();
+                } else {
+                    statusEl.textContent = 'Model failed to run: ' + err.message;
+                    statusEl.className = 'chat-status is-error';
+                }
+                return;
+            }
+
+            submitEl.disabled = false;
+            sidebar.classList.remove('is-busy');
+
+            if (detectResponse && detectResponse.success) {
+                const count = detectResponse.detections ? detectResponse.detections.length : 0;
+
+                if (detectResponse.saveError) {
+                    // Detection ran fine, but chrome.downloads.download() failed
+                    // (e.g. missing "downloads" permission in manifest.json).
+                    statusEl.textContent = `Found ${count} region(s), but saving to Downloads failed: ${detectResponse.saveError}`;
+                    statusEl.className = 'chat-status is-error';
+                } else {
+                    statusEl.textContent = count > 0
+                        ? `Redacted ${count} region(s) and saved to Downloads.`
+                        : 'No personal info detected. Original screenshot saved to Downloads.';
+                    statusEl.className = 'chat-status is-success';
+                    inputEl.value = '';
+                }
+            } else {
+                statusEl.textContent = 'Model failed: ' + (detectResponse && detectResponse.error ? detectResponse.error : 'unknown error');
+                statusEl.className = 'chat-status is-error';
+            }
+
+            window.setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'chat-status'; }, 4500);
+        } else {
+            submitEl.disabled = false;
+            sidebar.classList.remove('is-busy');
+            statusEl.textContent = 'Unable to capture the current screen.';
+            statusEl.className = 'chat-status is-error';
+        }
+    });
 }

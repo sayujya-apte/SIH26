@@ -3,8 +3,11 @@
   "name": "Chatbot Capture",
   "version": "1.0",
   "description": "A chatbot sidebar that captures input and the screen.",
-  "permissions": ["tabs", "storage", "scripting"],
-  "host_permissions": ["<all_urls>", "http://localhost:3000/*"], 
+  "permissions": ["tabs", "storage", "scripting", "downloads", "offscreen"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "host_permissions": ["<all_urls>"], 
   "action": {
     "default_title": "Toggle Chatbot"
   },
