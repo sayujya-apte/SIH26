@@ -1,4 +1,4 @@
-/**
+ /**
  * offscreen.js
  *
  * Runs inside the offscreen document, not the service worker. This is the

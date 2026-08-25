@@ -11,7 +11,7 @@ if (!document.getElementById('my-chatbot-sidebar')) {
           <p class="eyebrow">Privacy assistant</p>
           <h2>ScreenSafe</h2>
         </div>
-        <div class="connection-status" title="Ready to capture"><span></span><span class="sr-only">Ready</span></div>
+        <button id="chat-close" class="chat-close" aria-label="Close sidebar" title="Close"><span aria-hidden="true">✕</span></button>
       </header>
 
       <main class="privacy-body">
@@ -28,7 +28,7 @@ if (!document.getElementById('my-chatbot-sidebar')) {
       </main>
 
       <footer class="privacy-footer">
-        <button id="chat-submit" type="button"><span class="button-icon" aria-hidden="true">↗</span><span>Submit &amp; capture</span></button>
+        <button id="chat-submit" type="button"><span class="button-icon" aria-hidden="true">↗</span><span>Submit & capture</span></button>
         <p class="footer-copy"><span class="lock-icon" aria-hidden="true">⌑</span> Private by design</p>
       </footer>
     </div>
@@ -36,11 +36,37 @@ if (!document.getElementById('my-chatbot-sidebar')) {
 
     document.body.appendChild(sidebar);
 
-    let isVisible = true;
-    sidebar.classList.add('active');
+const closeEl = sidebar.querySelector('#chat-close');
     const inputEl = sidebar.querySelector('#chat-input');
     const submitEl = sidebar.querySelector('#chat-submit');
     const statusEl = sidebar.querySelector('#chat-status');
+
+    // Persist visibility per tab using sessionStorage (survives reloads, cleared on tab close)
+    const STORAGE_KEY = 'screensafe_sidebar_open';
+
+    function getInitialVisibility() {
+        try {
+            return sessionStorage.getItem(STORAGE_KEY) === 'true';
+        } catch {
+            return true; // default open on first load
+        }
+    }
+
+    function setVisibility(visible) {
+        try {
+            sessionStorage.setItem(STORAGE_KEY, String(visible));
+        } catch {}
+    }
+
+    let isVisible = getInitialVisibility();
+    sidebar.classList.toggle('active', isVisible);
+
+    // Close button handler
+    closeEl.addEventListener('click', () => {
+        isVisible = false;
+        sidebar.classList.remove('active');
+        setVisibility(false);
+    });
 
     // Wraps chrome.runtime.sendMessage so a stale/invalidated extension context
     // (e.g. the extension was reloaded or updated while this page was already
@@ -86,6 +112,7 @@ if (!document.getElementById('my-chatbot-sidebar')) {
         if (request.action === 'toggle_sidebar') {
             isVisible = !isVisible;
             sidebar.classList.toggle('active', isVisible);
+            setVisibility(isVisible);
             if (isVisible) window.setTimeout(() => inputEl.focus(), 250);
         }
     });

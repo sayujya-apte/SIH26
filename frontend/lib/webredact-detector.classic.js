@@ -19,7 +19,7 @@
         modelPath: null, // resolved to chrome.runtime.getURL("models/nano640_patched.onnx") below
         wasmPaths: null, // resolved to chrome.runtime.getURL("lib/ort/") below
         imgSize: 640,
-        confidenceThreshold: 0.70,
+        confidenceThreshold: 0.50,
         iouThreshold: 0.45,
         classNames: { 0: "class_0", 1: "class_1" }, // rename to actual PII classes if known
     };

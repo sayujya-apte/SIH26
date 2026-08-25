@@ -24,6 +24,9 @@
 #my-chatbot-sidebar *, #my-chatbot-sidebar *::before, #my-chatbot-sidebar *::after { box-sizing: border-box; }
 #my-chatbot-sidebar .privacy-shell { display: flex; height: 100%; flex-direction: column; background: var(--paper); box-shadow: -18px 0 45px rgba(23,33,43,.16); }
 #my-chatbot-sidebar .privacy-header { display: flex; align-items: center; gap: 12px; padding: 22px 22px 20px; background: var(--surface); border-bottom: 1px solid var(--line); }
+#my-chatbot-sidebar .chat-close { margin-left: auto; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; transition: background 160ms, color 160ms; }
+#my-chatbot-sidebar .chat-close:hover { background: var(--line); color: var(--ink); }
+#my-chatbot-sidebar .chat-close:focus-visible { outline: 3px solid rgba(15,124,120,.28); outline-offset: 2px; }
 #my-chatbot-sidebar .brand-mark { display: grid; width: 34px; height: 34px; padding: 8px 7px; gap: 3px; border-radius: 10px; background: var(--teal); }
 #my-chatbot-sidebar .brand-mark span { display: block; height: 3px; border-radius: 3px; background: #fff; }
 #my-chatbot-sidebar .brand-mark span:nth-child(2) { width: 75%; }

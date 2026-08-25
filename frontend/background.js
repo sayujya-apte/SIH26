@@ -338,3 +338,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     return false;
 });
+
+// Inject content script and CSS when toolbar icon is clicked
+chrome.action.onClicked.addListener(async (tab) => {
+    if (!tab.id) return;
+
+    try {
+        // Check if content script is already injected
+        const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => !!document.getElementById('my-chatbot-sidebar')
+        });
+
+        const alreadyInjected = results?.[0]?.result === true;
+
+        if (alreadyInjected) {
+            // Toggle existing sidebar
+            chrome.tabs.sendMessage(tab.id, { action: 'toggle_sidebar' });
+        } else {
+            // First injection
+            await chrome.scripting.insertCSS({
+                target: { tabId: tab.id },
+                files: ["style.css"]
+            });
+            await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ["content.js"]
+            });
+        }
+    } catch (err) {
+        console.error("Failed to inject content script:", err);
+    }
+});
