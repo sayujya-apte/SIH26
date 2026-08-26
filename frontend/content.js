@@ -153,7 +153,8 @@ const closeEl = sidebar.querySelector('#chat-close');
                 // This one call does the whole rest of the pipeline inside background.js:
                 // runs the ONNX model on the screenshot, draws black boxes over any
                 // detected PII, and saves the redacted PNG to the Downloads folder.
-                detectResponse = await safeSendMessage({ action: 'detect_pii', imgSrc: response.imgSrc });
+                const userPrompt = inputEl.value.trim();
+                detectResponse = await safeSendMessage({ action: 'detect_pii', imgSrc: response.imgSrc, userPrompt });
             } catch (err) {
                 submitEl.disabled = false;
                 sidebar.classList.remove('is-busy');

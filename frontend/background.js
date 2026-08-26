@@ -1,38 +1,4 @@
-// NOTE: onnxruntime-web is no longer imported here. Its wasm backend does a
-// dynamic import() internally, which the HTML spec disallows inside a
-// service worker (ServiceWorkerGlobalScope). Model inference instead runs
-// in offscreen.html/offscreen.js, a real DOM window context created on
-// demand via chrome.offscreen — see ensureOffscreenDocument() below.
-
-async function resizeImageDataUrl(dataUrl, targetSize = 640, backgroundColor = null) {
-    const blob = dataUrlToBlob(dataUrl);
-    const bitmap = await createImageBitmap(blob);
-
-    // Scale to fit entirely within targetSize x targetSize (no cropping)
-    const scale = Math.min(targetSize / bitmap.width, targetSize / bitmap.height);
-    const newWidth = Math.round(bitmap.width * scale);
-    const newHeight = Math.round(bitmap.height * scale);
-    const offsetX = Math.floor((targetSize - newWidth) / 2);
-    const offsetY = Math.floor((targetSize - newHeight) / 2);
-
-    const canvas = new OffscreenCanvas(targetSize, targetSize);
-    const ctx = canvas.getContext("2d");
-
-    // Fill background so the un-covered area (letterbox bars) isn't transparent/garbage.
-    // Set backgroundColor to null if you want a transparent PNG instead.
-    if (backgroundColor) {
-        ctx.fillStyle = backgroundColor;
-        ctx.fillRect(0, 0, targetSize, targetSize);
-    }
-
-    ctx.drawImage(bitmap, offsetX, offsetY, newWidth, newHeight);
-    bitmap.close();
-
-    const outBlob = await canvas.convertToBlob({ type: "image/png" });
-    const arrayBuffer = await outBlob.arrayBuffer();
-    return `data:image/png;base64,${arrayBufferToBase64(arrayBuffer)}`;
-}
-
+// Convert the data url to a png file
 function dataUrlToBlob(dataUrl) {
     const commaIndex = dataUrl.indexOf(",");
     const header = dataUrl.slice(0, commaIndex);
@@ -48,6 +14,7 @@ function dataUrlToBlob(dataUrl) {
     return new Blob([bytes], { type: mime });
 }
 
+
 // OffscreenCanvas has no toDataURL(), so we base64-encode the blob's bytes manually.
 function arrayBufferToBase64(buffer) {
     let binary = "";
@@ -59,10 +26,7 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
-// Draws solid black boxes over each detection's region on top of the
-// ORIGINAL (non-letterboxed) image. detections[].box coordinates are
-// already mapped back to this image's pixel space by detectPII(), so no
-// additional scaling is needed here.
+// Draws solid black boxes over each detection's region on top of the original image. 
 async function drawRedactedImage(dataUrl, detections) {
     const blob = dataUrlToBlob(dataUrl);
     const bitmap = await createImageBitmap(blob);
@@ -87,9 +51,7 @@ async function drawRedactedImage(dataUrl, detections) {
     return `data:image/png;base64,${arrayBufferToBase64(arrayBuffer)}`;
 }
 
-// Saves a data URL to disk via the chrome.downloads API (lands in the
-// user's Downloads folder, or wherever Chrome is configured to save to).
-// Requires the "downloads" permission in manifest.json.
+// Saves redacted image png as a file to Downloads.
 function saveImageLocally(dataUrl, filenamePrefix = "redacted") {
     return new Promise((resolve, reject) => {
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -111,16 +73,144 @@ function saveImageLocally(dataUrl, filenamePrefix = "redacted") {
     });
 }
 
-// ============================
+// Saves text content as a file to Downloads.
+function saveTextLocally(text, filenamePrefix = "moondream_response") {
+    return new Promise((resolve, reject) => {
+        console.log("[Moondream] Saving response to Downloads...");
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const base64 = btoa(unescape(encodeURIComponent(text)));
+        const dataUrl = `data:text/plain;base64,${base64}`;
+        chrome.downloads.download(
+            {
+                url: dataUrl,
+                filename: `${filenamePrefix}_${timestamp}.txt`,
+                saveAs: false,
+                conflictAction: "uniquify"
+            },
+            (downloadId) => {
+                if (chrome.runtime.lastError) {
+                    console.error("[Moondream] Download failed:", chrome.runtime.lastError.message);
+                    reject(new Error(chrome.runtime.lastError.message));
+                    return;
+                }
+                console.log("[Moondream] Download successful, ID:", downloadId);
+                resolve(downloadId);
+            }
+        );
+    });
+}
+
+// Calls Moondream API with the redacted image (base64) and returns the response
+async function callMoondreamApi(base64Png, userPrompt) {
+    const apiKey = ""; // [[API_KEY_HERE]]
+    if (!apiKey) {
+        throw new Error("Moondream API key not configured");
+    }
+
+    const imageDataUrl = `data:image/png;base64,${base64Png}`;
+
+    const systemPrompt = [
+        "You are the reasoning layer of a privacy-preserving browser agent. Your only",
+        "input is a screenshot of the current webpage, with sensitive regions (passwords,",
+        "personal data, faces, etc.) blacked out before it ever reached you. You have no",
+        "access to the DOM, HTML, or any element metadata — everything you know about the",
+        "page comes from visually interpreting this single image.",
+        "",
+        "Your task: given the user's goal and this screenshot, identify the next single",
+        "browser action needed to make progress, by visually locating the relevant UI",
+        "element (button, input field, link, etc.) yourself.",
+        "",
+        "Rules:",
+
+        "1. Base every decision purely on what is visible in the image. Do not assume",
+        "elements exist off-screen or outside the image bounds.",
+
+        "2. Treat every blacked-out region as permanently opaque. Never guess, infer, or",
+        "hallucinate what might be underneath it.",
+
+        "3. If the action needed requires interacting with a redacted region (e.g. typing",
+        "into a hidden password field), do not attempt it — instead return an action",
+        "indicating the user must handle that step manually.",
+
+        "4. Return pixel coordinates for the center of the target element as it appears",
+        "in the provided image.",
+
+        "5. If the goal already appears complete based on the current screenshot, return",
+        "\"done\".",
+
+        "",
+
+        "Output strictly as JSON, nothing else:",
+
+        "",
+        "{",
+        "\"action\": \"click\" | \"type\" | \"scroll\" | \"navigate\" | \"request_user_input\" | \"done\",",
+        "\"coordinates\": {\"x\": <int>, \"y\": <int>} | null,",
+        "\"value\": string | null,",
+        "\"confidence\": \"high\" | \"medium\" | \"low\",",
+        "\"reasoning\": string",
+        "}"
+    ].join("\n");
+
+    const response = await fetch(
+        "https://api.moondream.ai/v1/chat/completions",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: "moondream3.1-9B-A2B",
+                messages: [
+                    {
+                        role: "system",
+                        content: [
+                            {
+                                type: "text",
+                                text: systemPrompt
+                            }
+                        ]
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            {
+                                type: "text",
+                                text: userPrompt || "Identify the next action needed based on this screenshot."
+                            },
+                            {
+                                type: "image_url",
+                                image_url: {
+                                    url: imageDataUrl
+                                }
+                            }
+                        ]
+                    }
+                ]
+            })
+        }
+    );
+
+    console.log("[Moondream] HTTP status:", response.status);
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error("[Moondream] Error response:", errorData);
+        throw new Error(errorData.error?.message || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("[Moondream] Parsed response:", data);
+    return data;
+}
+
 // OFFSCREEN DOCUMENT (for model inference)
-// ============================
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
-let creatingOffscreenDocument = null; // guards against a race if multiple detections fire close together
+let creatingOffscreenDocument = null;
 
 async function hasOffscreenDocument() {
-    // chrome.runtime.getContexts requires Chrome 116+. If it's unavailable,
-    // fall back to assuming no document exists yet (createDocument below
-    // will just throw "already exists" in that edge case, which is caught).
+    
     if (!chrome.runtime.getContexts) return false;
     const existingContexts = await chrome.runtime.getContexts({
         contextTypes: ["OFFSCREEN_DOCUMENT"]
@@ -146,8 +236,6 @@ async function ensureOffscreenDocument() {
     try {
         await creatingOffscreenDocument;
     } catch (err) {
-        // Someone else may have created it in a race; only rethrow if it's
-        // not the expected "already exists" case.
         if (!String(err).includes("Only a single offscreen")) throw err;
     } finally {
         creatingOffscreenDocument = null;
@@ -165,14 +253,8 @@ async function runDetectionInOffscreen(imgSrc, options) {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-
-    // ============================
-    // TAKE SCREENSHOT
-    // ============================
     if (request.action === "take_screenshot") {
-
         setTimeout(() => {
-
             chrome.tabs.captureVisibleTab(
                 null,
                 { format: "png" },
@@ -188,7 +270,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
                     try {
                         const resizedDataUrl = await resizeImageDataUrl(dataUrl);
-                        sendResponse({ success: true, imgSrc: resizedDataUrl });
+                        sendResponse({ success: true, imgSrc: dataUrl });
 
                     } catch {
                         sendResponse({
@@ -205,75 +287,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-
-    // ============================
-    // SEND TO BACKEND
-    // ============================
-    if (request.action === "send_to_backend") {
-
-        const backendUrl = "http://localhost:3000/api/data";
-        const TIMEOUT_MS = 8000; // fail fast instead of hanging forever if the backend never responds
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-        fetch(backendUrl, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(request.payload),
-            signal: controller.signal
-        })
-            .then(function(response) {
-
-                if (!response.ok) {
-                    throw new Error(
-                        "Backend returned HTTP " + response.status
-                    );
-                }
-
-                sendResponse({
-                    success: true
-                });
-
-            })
-            .catch(function(error) {
-
-                // AbortController throws a DOMException named "AbortError" on timeout;
-                // surface that distinctly so it's obvious in logs/UI that it timed out
-                // rather than being rejected or erroring some other way.
-                const isTimeout = error && error.name === "AbortError";
-                const message = isTimeout
-                    ? `Backend request timed out after ${TIMEOUT_MS}ms (is something listening on ${backendUrl}?)`
-                    : String(error);
-
-                console.error("Backend error:", message);
-
-                sendResponse({
-                    success: false,
-                    error: message
-                });
-
-            })
-            .finally(function() {
-                clearTimeout(timeoutId);
-            });
-
-        return true;
-    }
-
-
-    // ============================
-    // DETECT PII
-    // ============================
     if (request.action === "detect_pii") {
 
         (async () => {
             try {
                 let imgSrc = request.imgSrc;
 
-                // If no image was handed to us, capture the current tab fresh.
                 if (!imgSrc) {
                     imgSrc = await new Promise((resolve, reject) => {
                         chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
@@ -287,33 +306,44 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
 
                 // NOTE: pass the ORIGINAL (non-letterboxed) image here — detectPII
-                // does its own internal letterbox to 640x640 and returns box
-                // coordinates already mapped back to this image's real pixel space.
-                // Do not pre-resize with resizeImageDataUrl() first, or detections
-                // will be double-letterboxed and the returned coordinates will be wrong.
                 const offscreenResult = await runDetectionInOffscreen(imgSrc, request.options || {});
                 if (!offscreenResult || !offscreenResult.success) {
                     throw new Error(
-                        (offscreenResult && offscreenResult.error) || "Offscreen detection failed with no error detail"
+                        (offscreenResult && offscreenResult.error)
                     );
                 }
                 const detections = offscreenResult.detections;
+                const userPrompt = request.userPrompt || "Identify the next action needed based on this screenshot.";
 
                 // Save a redacted copy locally (PII regions blacked out).
-                // This is best-effort: a save failure shouldn't fail the whole
-                // detection response, since the caller likely still wants the
-                // detection boxes even if the download couldn't be written.
                 let downloadId = null;
                 let saveError = null;
+                let redactedDataUrl = null;
                 try {
-                    const redactedDataUrl = await drawRedactedImage(imgSrc, detections);
+                    redactedDataUrl = await drawRedactedImage(imgSrc, detections);
                     downloadId = await saveImageLocally(redactedDataUrl);
                 } catch (err) {
                     console.error("Failed to save redacted image:", err);
                     saveError = String(err);
                 }
 
-                sendResponse({ success: true, detections, downloadId, saveError });
+                // Call Moondream API with the redacted image and user prompt
+                let moondreamResponse = null;
+                let moondreamError = null;
+                if (redactedDataUrl) {
+                    try {
+                        const apiResponse = await callMoondreamApi(redactedDataUrl, userPrompt);
+                        moondreamResponse = apiResponse;
+                        await saveTextLocally(JSON.stringify(apiResponse, null, 2));
+                    } catch (err) {
+                        console.error("Moondream API error:", err);
+                        moondreamError = String(err);
+                    }
+                } else {
+                    console.log("[Moondream] No redactedDataUrl available, skipping API call");
+                }
+
+                sendResponse({ success: true, detections, downloadId, saveError, moondreamResponse, moondreamError });
 
             } catch (error) {
                 console.error("PII detection error:", error);
@@ -324,13 +354,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         })();
 
-        return true; // keep the message channel open for the async sendResponse
+        return true;
     }
 
-
-    // ============================
-    // UNKNOWN ACTION
-    // ============================
     sendResponse({
         success: false,
         error: "Unknown action: " + request.action
@@ -344,7 +370,6 @@ chrome.action.onClicked.addListener(async (tab) => {
     if (!tab.id) return;
 
     try {
-        // Check if content script is already injected
         const results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => !!document.getElementById('my-chatbot-sidebar')
@@ -353,10 +378,8 @@ chrome.action.onClicked.addListener(async (tab) => {
         const alreadyInjected = results?.[0]?.result === true;
 
         if (alreadyInjected) {
-            // Toggle existing sidebar
             chrome.tabs.sendMessage(tab.id, { action: 'toggle_sidebar' });
         } else {
-            // First injection
             await chrome.scripting.insertCSS({
                 target: { tabId: tab.id },
                 files: ["style.css"]
